@@ -22,7 +22,7 @@ A new user can clone or unzip the repository, replace the two placeholder
 projects with their own Quarto projects, configure `dashboard.yml`, and run the
 same controller manually or on a schedule.
 
-**Release:** 1.0.1  
+**Release:** 1.0.2  
 **Licence:** MIT  
 **Author:** Chrissy h. Roberts
 
@@ -58,13 +58,13 @@ provided those dependencies are installed on the machine running it.
 
 The wrapper can optionally acquire data before Quarto renders:
 
-| Source mode | Built-in behaviour | Data received by the project |
+| Source mode | Who acquires the data? | Built-in behaviour |
 | --- | --- | --- |
-| `none` | No wrapper-managed acquisition | Existing/local project data |
-| `project` | The project handles acquisition itself, for example in a pre-render script | Whatever the project creates |
-| `kobo` | Downloads a configured KoboToolbox named synchronous export | CSV or XLSX |
-| `odk` | Downloads ODK Central form submissions from the submissions CSV endpoint | CSV |
-| `redcap` | Downloads records through the REDCap API | CSV |
+| `none` | Nobody | No acquisition. The project uses data already present |
+| `project` | Quarto project | The project acquires data itself, for example in a pre-render R or Python script |
+| `kobo` | Orchestrator | Downloads a configured KoboToolbox named synchronous export as CSV or XLSX |
+| `odk` | Orchestrator | Downloads ODK Central form submissions as CSV |
+| `redcap` | Orchestrator | Downloads records through the REDCap API as CSV |
 
 These connectors are conveniences. They are **not required**. A Quarto project
 can obtain data from any other system itself by using `source.type: project`.
@@ -155,15 +155,68 @@ be technically possible but are not claimed as tested supported destinations.
 
 ## The conceptual boundary
 
-A useful rule is:
+The cleanest way to think about the system is:
 
-> **The wrapper controls when, where and to whom. The Quarto project controls
-> what the data mean and what the dashboard says.**
+> **The orchestrator controls pipeline execution and delivery. Data acquisition
+> can either be handled by the orchestrator using its built-in connectors, or
+> by the Quarto project itself. The Quarto project controls transformation,
+> analysis and presentation.**
 
-The wrapper owns:
+### Acquisition mode A — orchestrator-managed
+
+Use this when you want `dashboard.yml` to describe a supported upstream system.
+
+```text
+Kobo / ODK / REDCap
+        ↓
+   ORCHESTRATOR
+   fetches data
+        ↓
+      QUARTO
+   analyses data
+        ↓
+     DELIVERY
+```
+
+The orchestrator performs the API/export step before `quarto render`.
+
+### Acquisition mode B — project-managed
+
+Use this when the Quarto project already knows how to obtain its own data, or
+when the source system is not one of the built-in connectors.
+
+```text
+   ORCHESTRATOR
+        ↓
+   invokes Quarto
+        ↓
+      QUARTO
+   R / Python / etc.
+        ↓
+   ANY DATA SOURCE
+        ↓
+ analysis + render
+        ↓
+     DELIVERY
+```
+
+In this mode set:
+
+```yaml
+source:
+  type: project
+```
+
+The orchestrator does not need to understand the upstream API. Acquisition can
+happen in a Quarto pre-render step, an R or Python script, or any other project
+code.
+
+### Responsibility split
+
+The orchestrator owns:
 
 - project discovery and scheduling
-- optional source acquisition
+- optional built-in source acquisition
 - secrets indirection
 - invoking Quarto
 - publication safety checks
@@ -175,49 +228,43 @@ The wrapper owns:
 
 The Quarto project owns:
 
+- project-managed acquisition when `source.type: project`
 - project-specific data transformation
 - analytical methods
 - source-specific interpretation
 - XLSForm semantics if applicable
 - charts, tables, narrative and UI
 - creation of operational product files
-- any custom connectors not implemented by the wrapper
+- any custom connectors not implemented by the orchestrator
 
 ## End-to-end model
 
 ```text
-                    OPTIONAL BUILT-IN INPUTS
-              ┌─────────┬─────────┬─────────┐
-              │  Kobo   │   ODK   │ REDCap  │
-              └────┬────┴────┬────┴────┬────┘
-                   │         │         │
-                   └─────────┼─────────┘
-                             ▼
-                 ┌─────────────────────┐
-                 │ CONTROLLER / WRAPPER│
-                 │ optional acquisition│
-                 └──────────┬──────────┘
-                            │ data files
-                            ▼
-                 ┌─────────────────────┐
-                 │   QUARTO PROJECT    │
-                 │ analyse + visualise │
-                 │ create products     │
-                 └──────┬────────┬─────┘
-                        │        │
-             render dir │        │ declared products
-                        ▼        ▼
-              ┌────────────┐  ┌──────────────────┐
-              │ Dashboard  │  │ Routing / XLSX   │
-              │ publication│  │ Current / Archive│
-              └─────┬──────┘  └────────┬─────────┘
-                    │                  │
-                    └────────┬─────────┘
-                             ▼
-                 ┌──────────────────────┐
-                 │ local filesystem or  │
-                 │ SharePoint/OneDrive  │
-                 └──────────────────────┘
+                 CHOOSE ONE ACQUISITION PATH
+
+   A. BUILT-IN CONNECTOR             B. PROJECT-MANAGED
+
+ Kobo / ODK / REDCap                    ORCHESTRATOR
+          ↓                                  ↓
+    ORCHESTRATOR                         QUARTO
+      fetches data                  pre-render / R / Python
+          ↓                                  ↓
+        QUARTO                         ANY DATA SOURCE
+          │                                  │
+          └──────────────┬───────────────────┘
+                         ▼
+              transform / analyse / render
+                         │
+              ┌──────────┴──────────┐
+              ▼                     ▼
+      rendered publication    declared products
+              │                     │
+              │               routing / XLSX
+              │               Current / Archive
+              └──────────┬──────────┘
+                         ▼
+             local filesystem or
+             SharePoint / OneDrive
 ```
 
 ---
@@ -478,6 +525,11 @@ The XLSX writer preserves IDs and values as text, including leading zeroes. It p
 ---
 
 # Data acquisition
+
+There are two supported acquisition models:
+
+1. **orchestrator-managed** — use `kobo`, `odk` or `redcap`
+2. **project-managed** — use `project` and let Quarto/R/Python fetch from any source
 
 Set `source.type` to one of:
 
