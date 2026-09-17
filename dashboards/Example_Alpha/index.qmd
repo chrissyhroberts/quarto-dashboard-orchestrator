@@ -1,0 +1,13 @@
+---
+title: "Example Alpha Dashboard"
+---
+
+# Starter dashboard
+
+This placeholder demonstrates a dashboard with **XLSX action-file delivery**.
+
+- `Field_Team` receives the open-cases worklist.
+- `Data_Team` receives the open-cases worklist and a data-review worklist.
+- The public dashboard is delivered separately from restricted action files.
+
+Replace this page and `generate_mock_data.py` with your own Quarto analysis.

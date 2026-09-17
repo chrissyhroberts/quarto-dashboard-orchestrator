@@ -1,0 +1,40 @@
+project:
+  name: Example Alpha Dashboard
+
+source:
+  type: none
+
+pulls: {}
+
+delivery:
+  mode: local
+  local:
+    root: Outputs
+  archive:
+    enabled: true
+    current_folder: Current
+    archive_folder: Archive
+
+dashboard:
+  folder: Dashboard
+
+action_files:
+  format: xlsx
+
+targets:
+  Field_Team:
+    folder: Field_Team
+  Data_Team:
+    folder: Data_Team
+
+products:
+  open_cases:
+    file: exports/open_cases.csv
+    targets: [Field_Team, Data_Team]
+  data_review:
+    file: exports/data_review.csv
+    targets: [Data_Team]
+
+runtime:
+  cleanup: true
+  remove_after_run: [data]

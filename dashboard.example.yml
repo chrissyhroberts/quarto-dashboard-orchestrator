@@ -1,0 +1,44 @@
+# Copy this to dashboards/YOUR_PROJECT/dashboard.yml and edit it.
+project:
+  name: "Example Study Dashboard"
+
+source:
+  type: none   # none | project | kobo | odk | redcap
+
+pulls: {}
+
+delivery:
+  mode: local  # local | sharepoint | both | none
+  local:
+    root: Outputs
+  archive:
+    enabled: true
+    current_folder: Current
+    archive_folder: Archive
+    timestamp_format: "%Y-%m-%dT%H%M%SZ"
+
+dashboard:
+  folder: Dashboard
+
+action_files:
+  # csv is the controller default. xlsx is often friendlier for end users.
+  format: xlsx
+
+targets:
+  Team_A:
+    folder: Team_A
+  Team_B:
+    folder: Team_B
+
+products:
+  followup_list:
+    file: exports/followup_list.csv
+    targets: [Team_A]
+
+  shared_summary:
+    file: exports/shared_summary.csv
+    targets: [Team_A, Team_B]
+
+runtime:
+  cleanup: true
+  remove_after_run: []

@@ -1,0 +1,38 @@
+project:
+  name: Example Beta Dashboard
+
+source:
+  type: none
+
+pulls: {}
+
+delivery:
+  mode: local
+  local:
+    root: Outputs
+  archive:
+    enabled: true
+
+dashboard:
+  folder: Dashboard
+
+action_files:
+  format: csv
+
+targets:
+  Operations:
+    folder: Operations
+  Analysts:
+    folder: Analysts
+
+products:
+  exceptions:
+    file: exports/exceptions.csv
+    targets: [Operations]
+  weekly_summary:
+    file: exports/weekly_summary.csv
+    targets: [Operations, Analysts]
+
+runtime:
+  cleanup: true
+  remove_after_run: []

@@ -1,0 +1,364 @@
+#!/usr/bin/env bash
+# Quarto Dashboard Delivery System 1.0.0
+# Copyright (c) 2026 Chrissy h. Roberts — MIT License
+set -euo pipefail
+
+BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME_ENV="$BASE_DIR/config/runtime.env"
+[[ -f "$RUNTIME_ENV" ]] && source "$RUNTIME_ENV"
+DASHBOARDS_DIR="${DASHBOARDS_DIR:-${PROJECTS_DIR:-$BASE_DIR/dashboards}}"
+SECRETS_FILE="${SECRETS_FILE:-$BASE_DIR/config/secrets.env}"
+RCLONE_CONFIG="${RCLONE_CONFIG:-$BASE_DIR/config/rclone.conf}"
+PYTHON="$BASE_DIR/.venv/bin/python"
+CONTROLLER="$BASE_DIR/dashboard_controller.py"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+ensure_runtime() {
+  [[ -x "$PYTHON" ]] || die "Python environment not found. Run ./setup.sh first."
+  [[ -f "$CONTROLLER" ]] || die "dashboard_controller.py not found."
+}
+
+run_controller() {
+  ensure_runtime
+  local args=( "$PYTHON" "$CONTROLLER" --projects-root "$DASHBOARDS_DIR" )
+  [[ -f "$SECRETS_FILE" ]] && args+=( --secrets "$SECRETS_FILE" )
+  export RCLONE_CONFIG
+  "${args[@]}" "$@"
+}
+
+slugify() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/_/g; s/^_+|_+$//g'
+}
+
+append_secret() {
+  local key="$1" value="$2" encoded
+  mkdir -p "$(dirname "$SECRETS_FILE")"
+  touch "$SECRETS_FILE"
+  chmod 600 "$SECRETS_FILE"
+  # JSON quoting preserves spaces, quotes, backslashes and '=' safely while
+  # keeping the secrets file non-executable. The value is passed on stdin, not
+  # as a Python command-line argument.
+  encoded="$(printf '%s' "$value" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+  if grep -qE "^${key}=" "$SECRETS_FILE"; then
+    local tmp
+    tmp="$(mktemp)"
+    grep -vE "^${key}=" "$SECRETS_FILE" > "$tmp" || true
+    printf '%s=%s\n' "$key" "$encoded" >> "$tmp"
+    mv "$tmp" "$SECRETS_FILE"
+  else
+    printf '%s=%s\n' "$key" "$encoded" >> "$SECRETS_FILE"
+  fi
+  chmod 600 "$SECRETS_FILE"
+}
+
+add_project() {
+  ensure_runtime
+  echo
+  echo "Add/configure a Quarto dashboard project"
+  echo "----------------------------------------"
+  read -r -p "Existing Quarto project folder: " pdir
+  [[ -d "$pdir" ]] || die "Folder does not exist: $pdir"
+  pdir="$(cd "$pdir" && pwd)"
+  [[ -f "$pdir/_quarto.yml" || -f "$pdir/_quarto.yaml" ]] || die "No _quarto.yml/_quarto.yaml found."
+
+  # Dashboards must sit immediately below DASHBOARDS_DIR for automatic discovery.
+  mkdir -p "$DASHBOARDS_DIR"
+  local expected_parent
+  expected_parent="$(cd "$DASHBOARDS_DIR" && pwd)"
+  if [[ "$(dirname "$pdir")" != "$expected_parent" ]]; then
+    echo
+    echo "The controller discovers immediate children of:"
+    echo "  $DASHBOARDS_DIR"
+    echo "Move/copy your Quarto project there, then rerun this command."
+    exit 2
+  fi
+
+  local project_name slug
+  project_name="$(basename "$pdir")"
+  read -r -p "Friendly project name [$project_name]: " friendly
+  friendly="${friendly:-$project_name}"
+  slug="$(slugify "$project_name")"
+
+  echo
+  echo "Data source:"
+  echo "  1) KoboToolbox"
+  echo "  2) ODK Central"
+  echo "  3) REDCap"
+  echo "  4) None / project handles its own data"
+  read -r -p "Choose [1-4]: " source_choice
+
+  local source_yaml pulls_yaml=""
+  case "$source_choice" in
+    1)
+      read -r -p "Kobo server [https://eu.kobotoolbox.org]: " server
+      server="${server:-https://eu.kobotoolbox.org}"
+      read -r -p "Kobo asset UID: " asset
+      read -r -p "Named Kobo export [dashboard]: " export_name
+      export_name="${export_name:-dashboard}"
+      read -r -s -p "Kobo API token: " token; echo
+      local token_env
+      token_env="$(printf '%s_KOBO_TOKEN' "$slug" | tr '[:lower:]' '[:upper:]')"
+      append_secret "$token_env" "$token"
+      source_yaml="source:
+  type: kobo
+  server: \"$server\"
+  token_env: $token_env
+  asset_uid: \"$asset\""
+      pulls_yaml="
+pulls:
+  submissions:
+    export: \"$export_name\"
+    output: \"data/submissions.csv\"
+    format: csv"
+      ;;
+    2)
+      read -r -p "ODK Central server (e.g. https://central.example.org): " server
+      read -r -p "ODK project ID: " project_id
+      read -r -p "ODK form ID: " form_id
+      read -r -p "ODK service-account email: " email
+      read -r -s -p "ODK password: " password; echo
+      local email_env password_env
+      email_env="$(printf '%s_ODK_EMAIL' "$slug" | tr '[:lower:]' '[:upper:]')"
+      password_env="$(printf '%s_ODK_PASSWORD' "$slug" | tr '[:lower:]' '[:upper:]')"
+      append_secret "$email_env" "$email"
+      append_secret "$password_env" "$password"
+      source_yaml="source:
+  type: odk
+  server: \"$server\"
+  email_env: $email_env
+  password_env: $password_env
+  project_id: \"$project_id\""
+      pulls_yaml="
+pulls:
+  submissions:
+    form_id: \"$form_id\"
+    output: \"data/submissions.csv\""
+      ;;
+    3)
+      read -r -p "REDCap API URL (e.g. https://redcap.example.org/api/): " server
+      read -r -s -p "REDCap API token: " token; echo
+      local token_env
+      token_env="$(printf '%s_REDCAP_TOKEN' "$slug" | tr '[:lower:]' '[:upper:]')"
+      append_secret "$token_env" "$token"
+      source_yaml="source:
+  type: redcap
+  server: \"$server\"
+  token_env: $token_env"
+      pulls_yaml="
+pulls:
+  records:
+    output: \"data/records.csv\""
+      ;;
+    4)
+      source_yaml="source:
+  type: none"
+      ;;
+    *) die "Invalid source choice." ;;
+  esac
+
+  echo
+  read -r -p "Recipient action-file format [xlsx] (csv/xlsx): " action_fmt
+  action_fmt="${action_fmt:-xlsx}"
+  case "$action_fmt" in
+    csv|xlsx) ;;
+    *) die "Action-file format must be csv or xlsx." ;;
+  esac
+
+  echo
+  echo "Delivery:"
+  echo "  1) Local only"
+  echo "  2) SharePoint only"
+  echo "  3) Both local and SharePoint"
+  echo "  4) None"
+  read -r -p "Choose [1-4]: " delivery_choice
+
+  local delivery_yaml
+  case "$delivery_choice" in
+    1)
+      read -r -p "Local published-output folder [Outputs]: " local_root
+      local_root="${local_root:-Outputs}"
+      delivery_yaml="delivery:
+  mode: local
+  local:
+    root: \"$local_root\""
+      ;;
+    2|3)
+      if ! command -v rclone >/dev/null 2>&1; then
+        die "rclone is not installed. Run ./setup.sh and enable SharePoint support."
+      fi
+      echo
+      echo "Configured rclone remotes:"
+      RCLONE_CONFIG="$RCLONE_CONFIG" rclone listremotes || true
+      read -r -p "SharePoint rclone remote name (without colon): " remote
+      read -r -p "Root folder on SharePoint [$friendly]: " sp_root
+      sp_root="${sp_root:-$friendly}"
+      if [[ "$delivery_choice" == "3" ]]; then
+        read -r -p "Local published-output folder [Outputs]: " local_root
+        local_root="${local_root:-Outputs}"
+        delivery_yaml="delivery:
+  mode: both
+  local:
+    root: \"$local_root\"
+  sharepoint:
+    remote: \"$remote\"
+    root: \"$sp_root\""
+      else
+        delivery_yaml="delivery:
+  mode: sharepoint
+  sharepoint:
+    remote: \"$remote\"
+    root: \"$sp_root\""
+      fi
+      ;;
+    4)
+      delivery_yaml="delivery:
+  mode: none"
+      ;;
+    *) die "Invalid delivery choice." ;;
+  esac
+
+  cat > "$pdir/dashboard.yml" <<EOF
+# Generated by dashboardctl add-project.
+# Secrets are stored separately in config/secrets.env.
+
+project:
+  name: "$friendly"
+
+$source_yaml
+$pulls_yaml
+
+$delivery_yaml
+
+dashboard:
+  folder: "Dashboard"
+
+action_files:
+  format: "$action_fmt"
+
+# Define destination folders once, then route each product to one or more targets.
+targets: {}
+
+products: {}
+
+# Transient downloaded data, declared products and Quarto output are removed
+# after each run. Local/SharePoint delivered copies are retained.
+runtime:
+  cleanup: true
+  remove_after_run: []
+EOF
+
+  chmod 600 "$SECRETS_FILE" 2>/dev/null || true
+  echo
+  echo "Created: $pdir/dashboard.yml"
+  echo "Credentials stored in: $SECRETS_FILE"
+  echo
+  echo "Validating configuration..."
+  run_controller --validate --project "$project_name"
+  echo
+  echo "Project configured. Test it with:"
+  echo "  ./dashboardctl test \"$project_name\""
+}
+
+sharepoint_setup() {
+  command -v rclone >/dev/null 2>&1 || die "rclone not found. Run ./setup.sh first."
+  mkdir -p "$(dirname "$RCLONE_CONFIG")"
+  touch "$RCLONE_CONFIG"
+  chmod 600 "$RCLONE_CONFIG"
+  echo
+  echo "SharePoint connection setup"
+  echo "---------------------------"
+  echo "rclone will now open its interactive Microsoft OneDrive/SharePoint setup."
+  echo "Choose 'Microsoft OneDrive', authenticate with the intended service account,"
+  echo "then select the SharePoint site/document library."
+  echo
+  RCLONE_CONFIG="$RCLONE_CONFIG" rclone config
+  chmod 600 "$RCLONE_CONFIG"
+  echo
+  echo "Configured remotes:"
+  RCLONE_CONFIG="$RCLONE_CONFIG" rclone listremotes
+  echo
+  read -r -p "Remote to test (without colon, or Enter to skip): " remote
+  if [[ -n "$remote" ]]; then
+    echo "Testing remote listing..."
+    RCLONE_CONFIG="$RCLONE_CONFIG" rclone lsd "${remote}:"
+    echo "✓ Connection test completed."
+  fi
+}
+
+install_cron() {
+  local default="0 2 * * *"
+  echo
+  echo "Cron schedule uses standard five-field cron syntax."
+  echo "Default = every day at 02:00."
+  read -r -p "Schedule [$default]: " schedule
+  schedule="${schedule:-$default}"
+  local marker="# quarto-dashboard-delivery-system"
+  local line="$schedule $BASE_DIR/run.sh $marker"
+  local existing
+  existing="$(crontab -l 2>/dev/null || true)"
+  existing="$(printf '%s\n' "$existing" | grep -vF "$marker" || true)"
+  { printf '%s\n' "$existing"; printf '%s\n' "$line"; } | crontab -
+  echo "Installed:"
+  echo "  $line"
+}
+
+status() {
+  local summary="$BASE_DIR/logs/latest_run_summary.json"
+  if [[ ! -f "$summary" ]]; then
+    echo "No completed run summary found yet."
+    exit 0
+  fi
+  if [[ -x "$PYTHON" ]]; then
+    "$PYTHON" - "$summary" <<'PY'
+import json, sys
+p=sys.argv[1]
+x=json.load(open(p))
+print(f"Run:      {x.get('run_id','?')}")
+print(f"Started:  {x.get('started_utc','?')}")
+print(f"Finished: {x.get('finished_utc','?')}")
+print()
+for p in x.get("projects", []):
+    cleanup=p.get("cleanup_status") or "-"
+    print(f"{p.get('project','?'):30} {p.get('status','?'):18} cleanup={cleanup}")
+    if p.get("error"):
+        print(f"  error: {p['error']}")
+    if p.get("cleanup_error"):
+        print(f"  cleanup error: {p['cleanup_error']}")
+PY
+  else
+    cat "$summary"
+  fi
+}
+
+usage() {
+cat <<EOF
+Usage: ./dashboardctl COMMAND
+
+Commands:
+  add-project       Guided creation of a project's dashboard.yml + secrets
+  sharepoint        Guided rclone/SharePoint connection setup
+  validate          Validate all configured projects; no data pull/render
+  test PROJECT      Run one project now
+  run               Run all projects now
+  status            Show summary from the most recent run
+  cron              Install/update the cron entry
+  help              Show this help
+
+Environment overrides:
+  DASHBOARDS_DIR, SECRETS_FILE, RCLONE_CONFIG
+EOF
+}
+
+cmd="${1:-help}"
+case "$cmd" in
+  add-project) add_project ;;
+  sharepoint) sharepoint_setup ;;
+  validate) run_controller --validate ;;
+  test) [[ $# -ge 2 ]] || die "Usage: ./dashboardctl test PROJECT"; run_controller --project "$2" ;;
+  run) "$BASE_DIR/run.sh" ;;
+  status) status ;;
+  cron) install_cron ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

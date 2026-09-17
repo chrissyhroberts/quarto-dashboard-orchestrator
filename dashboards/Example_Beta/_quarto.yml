@@ -1,0 +1,9 @@
+project:
+  type: website
+  output-dir: docs
+  pre-render: python3 generate_mock_data.py
+website:
+  title: "Example Beta Dashboard"
+format:
+  html:
+    toc: true

@@ -1,0 +1,9 @@
+---
+title: "Example Beta Dashboard"
+---
+
+# Second placeholder dashboard
+
+This example demonstrates **CSV delivery** and proves that the controller can discover and process multiple independent Quarto projects in the same `dashboards/` directory.
+
+Change `action_files.format` to `xlsx` if spreadsheet users should receive Excel workbooks instead.

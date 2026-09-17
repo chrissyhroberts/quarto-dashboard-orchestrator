@@ -1,0 +1,13 @@
+project:
+  type: website
+  output-dir: docs
+  pre-render: python3 generate_mock_data.py
+website:
+  title: "Example Alpha Dashboard"
+  navbar:
+    left:
+      - href: index.qmd
+        text: Home
+format:
+  html:
+    toc: true
